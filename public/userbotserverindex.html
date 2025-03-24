@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Userbot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background: #1a1a1a;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', sans-serif;
+        }
+        #divider {
+            width: 4px;
+            background: #333;
+            cursor: col-resize;
+        }
+        #chatbox::-webkit-scrollbar { width: 6px; }
+        #chatbox::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+        #chatbox::-webkit-scrollbar-track { background: #2a2a2a; }
+        .btn {
+            transition: all 0.2s ease;
+        }
+        .btn:hover {
+            transform: scale(1.05);
+        }
+        input, select {
+            background: #2a2a2a;
+            border: 1px solid #444;
+            color: #e0e0e0;
+        }
+    </style>
+</head>
+<body class="flex h-screen">
+    <div id="sidebar" class="bg-gray-900 w-1/4 p-4 overflow-y-auto shadow-lg">
+        <h2 class="text-xl font-bold mb-4 text-gray-200">Logs</h2>
+        <div id="log" class="text-sm text-gray-400"></div>
+    </div>
+    <div id="divider"></div>
+    <div id="main" class="flex-1 flex flex-col">
+        <div id="chatbox" class="flex-1 p-6 overflow-y-auto bg-gray-800"></div>
+        <div id="controls" class="p-4 bg-gray-900 border-t border-gray-700 flex flex-wrap items-center gap-2">
+            <button onclick="startBot()" class="btn bg-green-600 text-white px-4 py-2 rounded">Start Bot</button>
+            <button onclick="stopBot()" class="btn bg-red-600 text-white px-4 py-2 rounded">Stop Bot</button>
+            <input id="replyInput" type="text" placeholder="Auto-reply message" value="The person you are looking for, will be here soon..." class="p-2 rounded flex-1 min-w-[200px]">
+            <button onclick="setReply()" class="btn bg-blue-600 text-white px-4 py-2 rounded">Set Reply</button>
+            <input id="messageInput" type="text" placeholder="Send a message" class="p-2 rounded flex-1 min-w-[200px]">
+            <button onclick="sendMessage()" class="btn bg-blue-600 text-white px-4 py-2 rounded">Send</button>
+            <label class="flex items-center gap-2">
+                <input id="llmToggle" type="checkbox" checked class="h-5 w-5">
+                <span>Enable LLM</span>
+            </label>
+            <select id="modelSelect"  onchange="socket.emit('setModel', this.value)">
+                <option value="gemini-2.0-flash">Gemini 2.0 Flash (Google)</option>
+                <option value="deepseek/deepseek-r1-distill-qwen-32b:free">DeepSeek (OpenRouter)</option>
+                <option value="xai/grok">Grok (OpenRouter)</option>
+                <option value="huggingface/facebook/blenderbot-400M-distill">BlenderBot (Hugging Face)</option>
+                <option value="together/meta-llama/Llama-3-8b-hf">Llama-3 (Together AI)</option>
+                <option value="deepinfra/mistralai/Mixtral-8x7B-Instruct-v0.1">Mixtral (DeepInfra)</option>
+            </select>
+            <input id="systemPrompt" type="text" placeholder="LLM system prompt" value="You’re a mature, silent gentleman. Speak in few words, sharp and smart. Stay calm, polite, but savage if insulted or poked. Use Hindi when replying to Hindi, otherwise English. Rarely use emojis—only if it fits. Keep it intelligent, logical, minimal, no fluff." class="p-2 rounded flex-1 min-w-[200px]">
+            <button onclick="setSystemPrompt()" class="btn bg-purple-600 text-white px-4 py-2 rounded">Set Prompt</button>
+        </div>
+    </div>
+    <div id="info-panel" class="fixed top-4 right-4 w-64 bg-gray-900 p-4 shadow-lg rounded-lg hidden">
+        <h3 class="text-lg font-semibold mb-2 text-gray-200">User Info</h3>
+        <div id="info-content" class="text-gray-400"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const logDiv = document.getElementById("log");
+        const chatbox = document.getElementById("chatbox");
+        const infoPanel = document.getElementById("info-panel");
+        const infoContent = document.getElementById("info-content");
+        let selectedUserId = null;
+        let oldestMessageId = 0;
+        let isLoading = false;
+
+        socket.on("log", ({ type, message, timestamp, userInfo }) => {
+            const logEntry = document.createElement("div");
+            logEntry.className = `mb-2 ${type === "INFO" ? "text-green-400" : type === "MESSAGE" ? "text-blue-400" : type === "TYPING" ? "text-orange-400" : "text-red-400"}`;
+            if (userInfo) {
+                const userSpan = document.createElement("span");
+                userSpan.className = "cursor-pointer underline";
+                userSpan.textContent = userInfo.displayName;
+                userSpan.onclick = () => {
+                    selectedUserId = userInfo.id;
+                    showUserInfo(userInfo);
+                    loadMessages(userInfo.id);
+                };
+                logEntry.appendChild(userSpan);
+                logEntry.append(` ${message.split(userInfo.displayName)[1]}`);
+            } else {
+                logEntry.textContent = `[${timestamp}] ${type}: ${message}`;
+            }
+            logDiv.appendChild(logEntry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        });
+
+        socket.on("newMessage", ({ userId, text, date, out }) => {
+            if (userId === selectedUserId) {
+                addMessage(text, date, out);
+                chatbox.scrollTop = chatbox.scrollHeight;
+            }
+        });
+
+        socket.on("messages", ({ userId, messages }) => {
+            if (userId === selectedUserId && messages.length) {
+                const wasAtTop = chatbox.scrollTop === 0;
+                messages.reverse().forEach(msg => addMessage(msg.text, msg.date, msg.out, true));
+                oldestMessageId = messages[0].id;
+                if (wasAtTop) chatbox.scrollTop = 20;
+                isLoading = false;
+            }
+        });
+
+        function addMessage(text, date, out, prepend = false) {
+            const msgDiv = document.createElement("div");
+            msgDiv.className = `p-3 my-2 rounded-lg max-w-md ${out ? "bg-green-700 ml-auto" : "bg-gray-700 mr-auto"}`;
+            msgDiv.innerHTML = `<div class="text-xs text-gray-400">${date}</div><div>${text}</div>`;
+            if (prepend) chatbox.insertBefore(msgDiv, chatbox.firstChild);
+            else chatbox.appendChild(msgDiv);
+        }
+
+        function loadMessages(userId, offsetId = 0) {
+            if (isLoading) return;
+            isLoading = true;
+            chatbox.innerHTML = offsetId ? chatbox.innerHTML : "";
+            socket.emit("fetchMessages", { userId, offsetId });
+        }
+
+        chatbox.onscroll = () => {
+            if (chatbox.scrollTop < 50 && selectedUserId && !isLoading) {
+                loadMessages(selectedUserId, oldestMessageId);
+            }
+        };
+
+        function showUserInfo(userInfo) {
+            infoContent.innerHTML = `
+                <div><strong>ID:</strong> ${userInfo.id}</div>
+                <div><strong>First Name:</strong> ${userInfo.firstName}</div>
+                <div><strong>Last Name:</strong> ${userInfo.lastName || "N/A"}</div>
+                <div><strong>Username:</strong> ${userInfo.username || "N/A"}</div>
+            `;
+            infoPanel.classList.remove("hidden");
+        }
+
+        function startBot() { socket.emit("startBot"); }
+        function stopBot() { socket.emit("stopBot"); }
+        function setReply() {
+            const reply = document.getElementById("replyInput").value;
+            socket.emit("setReply", reply);
+        }
+        function sendMessage() {
+            const text = document.getElementById("messageInput").value;
+            if (selectedUserId && text) {
+                socket.emit("sendMessage", { userId: selectedUserId, text });
+                document.getElementById("messageInput").value = "";
+            }
+        }
+        function setSystemPrompt() {
+            const prompt = document.getElementById("systemPrompt").value;
+            socket.emit("setSystemPrompt", prompt);
+        }
+
+        document.getElementById("llmToggle").onchange = (e) => {
+            socket.emit("toggleLLM", e.target.checked);
+        };
+
+        const divider = document.getElementById("divider");
+        const sidebar = document.getElementById("sidebar");
+        let isResizing = false;
+
+        divider.addEventListener("mousedown", () => {
+            isResizing = true;
+        });
+        document.addEventListener("mousemove", (e) => {
+            if (isResizing) {
+                const newWidth = e.clientX;
+                if (newWidth > 100 && newWidth < window.innerWidth * 0.5) {
+                    sidebar.style.width = `${newWidth}px`;
+                }
+            }
+        });
+        document.addEventListener("mouseup", () => {
+            isResizing = false;
+        });
+    </script>
+</body>
+</html> 
