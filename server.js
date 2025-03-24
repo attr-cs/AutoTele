@@ -57,7 +57,9 @@ const messageSchema = new mongoose.Schema({
     timestamp: { type: Date, default: Date.now }
 });
 const Message = mongoose.model("Message", messageSchema);
-
+app.get('/test', (req, res) => {
+    res.json({"msg":"service is live.."});
+});
 // Authentication
 app.use(basicAuth({
     users: { "admin": superSecretPassword },
@@ -67,9 +69,7 @@ app.use(basicAuth({
 app.get('/', (req, res) => {
     res.sendFile('userbotserverindex.html', { root: 'public' });
 });
-app.get('/test', (req, res) => {
-    res.json({"msg":"service is live.."});
-});
+
 app.use(express.static("public"));
 
 function uiLog(type, message, userInfo = null) {
