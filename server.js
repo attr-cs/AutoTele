@@ -30,9 +30,15 @@ let llmEnabled = false;
 let systemPrompt = "You're a chill dude. Keep it short, cool, and casual. No big texts, use emojis very rare. You have a black color dp, with no name, so people also think of u as a ghost. U use less words while speak, u r savage, silent, mature, dont use ..., you also talk in hindi if someone talks with you in hindi, you talk with the language people talk with you, otherwise you talk in english. ";
 let chatHistoryMemory = {};
 let selectedModel = "gemini-2.0-flash"; // Default model
+let primaryKeyFailures = 0;
+const MAX_FAILURES = 5;
 
- // Initialize Google Generative AI
+// Load allowed users from .env
+const allowedUsers = process.env.ALLOWED_USERS ? process.env.ALLOWED_USERS.split(",") : ["1392325228"]; // Default to Varsh if not set
+
+// Initialize Google Generative AI with primary and fallback keys
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "YOUR_API_KEY");
+const genAIFallback = new GoogleGenerativeAI(process.env.GEMINI_API_KEY2 || "YOUR_FALLBACK_API_KEY");
 
 // MongoDB Setup
 mongoose.connect(process.env.DB_URL, {
@@ -57,6 +63,7 @@ const messageSchema = new mongoose.Schema({
     timestamp: { type: Date, default: Date.now }
 });
 const Message = mongoose.model("Message", messageSchema);
+
 app.get('/test', (req, res) => {
     res.json({"msg":"service is live.."});
 });
@@ -132,12 +139,12 @@ async function updateChatHistory(userId, role, content) {
 
 async function getChatHistory(userId) {
     try {
-        const dbHistory = await Message.find({ userId }).sort({ timestamp: 1 }).lean();
+        const dbHistory = await Message.find({ userId, role: "user" }).sort({ timestamp: 1 }).lean();
         if (dbHistory.length > 0) return dbHistory;
-        return chatHistoryMemory[userId] || [];
+        return chatHistoryMemory[userId] ? chatHistoryMemory[userId].filter(msg => msg.role === "user") : [];
     } catch (error) {
         uiLog("ERROR", `Failed to fetch from MongoDB: ${error.message}, using in-memory fallback`);
-        return chatHistoryMemory[userId] || [];
+        return chatHistoryMemory[userId] ? chatHistoryMemory[userId].filter(msg => msg.role === "user") : [];
     }
 }
 
@@ -145,47 +152,59 @@ async function callLLM(userId, prompt) {
     const history = await getChatHistory(userId);
     const messages = [
         { role: "system", content: systemPrompt },
-        ...history.map(msg => ({content: msg.content })),
+        ...history.map(msg => ({ role: "user", content: msg.content })),
         { role: "user", content: prompt }
     ];
 
     let apiConfig;
     if (selectedModel.includes("gemini")) {
-        // Gemini via Google Generative AI SDK
+        const useFallbackDirectly = primaryKeyFailures >= MAX_FAILURES;
+        if (!useFallbackDirectly) {
+            try {
+                uiLog("INFO", `Calling Gemini (${selectedModel}): ${prompt.substring(0, 50)}`);
+                const model = genAI.getGenerativeModel({ model: selectedModel });
+                const fullPrompt = messages.map(m => `${m.role === "system" ? "System: " : "User: "}${m.content}`).join("\n");
+                const result = await model.generateContent(fullPrompt);
+                const reply = result.response.text().trim();
+                primaryKeyFailures = 0;
+                return reply || "No response";
+            } catch (error) {
+                primaryKeyFailures++;
+                uiLog("ERROR", `Gemini (${selectedModel}) failed with primary key (${primaryKeyFailures}/${MAX_FAILURES}): ${error.message}, trying fallback key...`);
+            }
+        }
+
         try {
-            uiLog("INFO", `Calling Gemini (${selectedModel}): ${prompt.substring(0, 50)}...`);
-            const model = genAI.getGenerativeModel({ model: selectedModel });
-            const fullPrompt = messages.map(m => `${m.content}`).join("\n");
-            const result = await model.generateContent(fullPrompt);
+            uiLog("INFO", `Using fallback key for Gemini (${selectedModel}): ${prompt.substring(0, 50)}`);
+            const fallbackModel = genAIFallback.getGenerativeModel({ model: selectedModel });
+            const fullPrompt = messages.map(m => `${m.role === "system" ? "System: " : "User: "}${m.content}`).join("\n");
+            const result = await fallbackModel.generateContent(fullPrompt);
             const reply = result.response.text().trim();
+            uiLog("INFO", "Fallback Gemini key succeeded.");
             return reply || "No response";
-        } catch (error) {
-            uiLog("ERROR", `Gemini (${selectedModel}) failed: ${error.message}`);
+        } catch (fallbackError) {
+            uiLog("ERROR", `Gemini (${selectedModel}) failed with fallback key: ${fallbackError.message}`);
             return "Jyada ho gaya, now wait.";
         }
     } else if (selectedModel.includes("huggingface/")) {
-        // Hugging Face direct API
         apiConfig = {
             url: "https://api-inference.huggingface.co/models/" + selectedModel.replace("huggingface/", ""),
             headers: { "Authorization": `Bearer ${process.env.HUGGINGFACE_API_KEY}`, "Content-Type": "application/json" },
             body: { inputs: prompt }
         };
     } else if (selectedModel.includes("together/")) {
-        // Together AI direct API
         apiConfig = {
             url: "https://api.together.xyz/v1/chat/completions",
             headers: { "Authorization": `Bearer ${process.env.TOGETHER_API_KEY}`, "Content-Type": "application/json" },
             body: { model: selectedModel.replace("together/", ""), messages, max_tokens: 50, temperature: 0.7 }
         };
     } else if (selectedModel.includes("deepinfra/")) {
-        // DeepInfra direct API
         apiConfig = {
             url: "https://api.deepinfra.com/v1/openai-compatible/chat/completions",
             headers: { "Authorization": `Bearer ${process.env.DEEPINFRA_API_KEY}`, "Content-Type": "application/json" },
             body: { model: selectedModel.replace("deepinfra/", ""), messages, max_tokens: 50, temperature: 0.7 }
         };
     } else {
-        // OpenRouter (default, covers most models)
         apiConfig = {
             url: "https://openrouter.ai/api/v1/chat/completions",
             headers: {
@@ -198,10 +217,9 @@ async function callLLM(userId, prompt) {
         };
     }
 
-    // Handle non-Gemini APIs
     if (!selectedModel.includes("gemini")) {
         try {
-            uiLog("INFO", `Calling ${selectedModel}: ${prompt.substring(0, 50)}...`);
+            uiLog("INFO", `Calling ${selectedModel}: ${prompt.substring(0, 50)}`);
             const response = await axios.post(apiConfig.url, apiConfig.body, { headers: apiConfig.headers, timeout: 5000 });
             const reply = selectedModel.includes("huggingface/") ? response.data.generated_text?.trim() : response.data.choices[0].message.content.trim();
             return reply || "No response";
@@ -284,6 +302,13 @@ async function onMessage(update, me) {
             const isDM = isShort || update.message.peerId instanceof Api.PeerUser;
             const out = isShort ? update.out : update.message.out;
 
+            const senderIdStr = senderId.toString();
+
+            if (!allowedUsers.includes(senderIdStr)) {
+                uiLog("INFO", `Ignoring message from unauthorized user ${senderId}`);
+                return;
+            }
+
             const userInfo = await getUserInfo(senderId);
             if (isDM && !out && senderId !== myId) {
                 uiLog("MESSAGE", `${userInfo.displayName} sent: "${messageText}"`, userInfo);
@@ -293,13 +318,13 @@ async function onMessage(update, me) {
                 uiLog("INFO", `Replying to ${userInfo.displayName} with: "${reply}"`);
                 await client.sendMessage(senderId, { message: reply });
                 await updateChatHistory(senderId, "bot", reply);
-            } else if (out && senderId !== myId) { // Only log outgoing messages, don't reply
+            } else if (out && senderId !== myId) {
                 uiLog("INFO", `Sent to ${userInfo.displayName}: "${messageText}"`);
                 io.emit("newMessage", { userId: senderId, text: messageText, date: new Date().toLocaleString(), out: true });
             }
         } else if (update instanceof Api.UpdateUserTyping) {
             const userId = update.userId.valueOf();
-            if (userId !== myId) {
+            if (userId !== myId && allowedUsers.includes(userId.toString())) {
                 const userInfo = await getUserInfo(userId);
                 uiLog("TYPING", `${userInfo.displayName} is typing...`, userInfo);
             }
@@ -308,6 +333,7 @@ async function onMessage(update, me) {
         uiLog("ERROR", `Error in message handler: ${error.message}`);
     }
 }
+
 io.on("connection", (socket) => {
     uiLog("INFO", "UI connected!");
     socket.on("startBot", () => startBot());

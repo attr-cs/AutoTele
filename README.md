@@ -48,6 +48,7 @@ SUPER_SECRET_PASSWORD=your_admin_password
 USERNAME=admin
 GEMINI_API_KEY=your_gemini_key
 DB_URL=your_mongodb_url
+ALLOWED_USERS=id1,id2,id3,id4,id5
 ```
 
 ### Installation
