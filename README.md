@@ -119,4 +119,4 @@ Feel free to submit issues and enhancement requests.
 MIT License
 
 ---
-Created with ❤️ by [Your Name]
+Created with ❤️ by Raider Community
