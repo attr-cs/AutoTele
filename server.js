@@ -67,6 +67,9 @@ app.use(basicAuth({
 app.get('/', (req, res) => {
     res.sendFile('userbotserverindex.html', { root: 'public' });
 });
+app.get('/test', (req, res) => {
+    res.json({"msg":"service is live.."});
+});
 app.use(express.static("public"));
 
 function uiLog(type, message, userInfo = null) {
