@@ -48,7 +48,7 @@
             <input id="messageInput" type="text" placeholder="Send a message" class="p-2 rounded flex-1 min-w-[200px]">
             <button onclick="sendMessage()" class="btn bg-blue-600 text-white px-4 py-2 rounded">Send</button>
             <label class="flex items-center gap-2">
-                <input id="llmToggle" type="checkbox" checked class="h-5 w-5">
+                <input id="llmToggle" type="checkbox" class="h-5 w-5">
                 <span>Enable LLM</span>
             </label>
             <select id="modelSelect"  onchange="socket.emit('setModel', this.value)">
