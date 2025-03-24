@@ -293,12 +293,11 @@ async function onMessage(update, me) {
                 uiLog("INFO", `Replying to ${userInfo.displayName} with: "${reply}"`);
                 await client.sendMessage(senderId, { message: reply });
                 await updateChatHistory(senderId, "bot", reply);
-            } else if (out) {
+            } else if (out && senderId !== myId) { // Only log outgoing messages, don't reply
                 uiLog("INFO", `Sent to ${userInfo.displayName}: "${messageText}"`);
                 io.emit("newMessage", { userId: senderId, text: messageText, date: new Date().toLocaleString(), out: true });
-                await updateChatHistory(senderId, "bot", messageText);
             }
-        } else if (update instanceof Api.UpdateNewMessage || update instanceof Api.UpdateUserTyping) {
+        } else if (update instanceof Api.UpdateUserTyping) {
             const userId = update.userId.valueOf();
             if (userId !== myId) {
                 const userInfo = await getUserInfo(userId);
@@ -309,7 +308,6 @@ async function onMessage(update, me) {
         uiLog("ERROR", `Error in message handler: ${error.message}`);
     }
 }
-
 io.on("connection", (socket) => {
     uiLog("INFO", "UI connected!");
     socket.on("startBot", () => startBot());
